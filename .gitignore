@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# OMC plugin local state
+.omc/
+
+# Review cache (auto-generated)
+.claude/repo-cache/
+.claude/review-history/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
