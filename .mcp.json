@@ -20,7 +20,17 @@
         "ghcr.io/github/github-mcp-server"
       ],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${TOKEN}"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${WNSGUR9137_GITHUB_TOKEN}"
+      }
+    },
+    "shrimp-task-manager": {
+      "command": "npx",
+      "args": ["-y", "mcp-shrimp-task-manager"],
+      "env": {
+        "DATA_DIR": "/Users/junhyeokserver/shrimp_data",
+        "TEMPLATES_USE": "ko",
+        "ENABLE_GUI": "true",
+        "WEB_PORT": "3000"
       }
     },
     "context7": {
