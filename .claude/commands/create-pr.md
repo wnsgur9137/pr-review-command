@@ -72,6 +72,9 @@ git ls-remote origin refs/heads/<현재 브랜치> | head -1
 3. `.github/pull_request_template.md`
 4. `.github/PULL_REQUEST_TEMPLATE/*.md` (여러 개면 첫 번째)
 5. `docs/PULL_REQUEST_TEMPLATE.md`
+6. `docs/pull_request_template.md`
+7. `PULL_REQUEST_TEMPLATE.md`
+8. `pull_request_template.md`
 
 템플릿이 없으면 다음 최소 본문 사용:
 
@@ -122,15 +125,15 @@ git ls-remote origin refs/heads/<현재 브랜치> | head -1
 
 ```bash
 gh auth status            # 인증 확인
+
+# --open 인자가 없을 때만 --draft 옵션을 추가하여 실행합니다.
 gh pr create \
   --base "<base>" \
   --head "<현재 브랜치>" \
   --title "<title>" \
-  --body-file <(cat <<'EOF'
+  --body-file - <<'EOF'
 <본문>
 EOF
-) \
-  [--draft]                # --open 인자가 없을 때만 --draft 추가
 ```
 
 - 본문은 HEREDOC으로 안전하게 전달한다. 본문에 `'EOF'`가 포함되면 별도 구분자(`'OMC_PR_EOF'` 등)로 바꾼다.
