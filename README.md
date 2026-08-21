@@ -19,6 +19,10 @@ Claude Code에서 사용할 수 있는 PR 리뷰 자동화 글로벌 커맨드 �
   - [code-review-graph 통합](#code-review-graph-통합)
   - [토큰 최적화](#토큰-최적화)
 - [/apply-review](#apply-review)
+- [/ship](#ship)
+  - [단계와 정지 조건](#단계와-정지-조건)
+  - [Draft 유지 순서](#draft-유지-순서)
+  - [진행 상태 판정](#진행-상태-판정)
 - [의존성](#의존성)
 - [설정](#설정)
   - [필수 요구사항](#필수-요구사항)
@@ -82,6 +86,8 @@ Claude Code에서 사용할 수 있는 PR 리뷰 자동화 글로벌 커맨드 �
 | `/pr-review --help` | `/pr-review` 도움말 표시 |
 | `/apply-review <PR>` | PR 리뷰 코멘트를 로컬 코드에 반영 |
 | `/apply-review --help` | `/apply-review` 도움말 표시 |
+| `/ship [설명] [옵션]` | 구현부터 병합까지 7단계 파이프라인을 순서대로 수행 (위 커맨드들을 조합) |
+| `/ship --help` | `/ship` 도움말 표시 |
 
 ---
 
@@ -448,6 +454,105 @@ PR에 달린 리뷰 코멘트를 분석하여 로컬 코드에 자동으로 반�
 
 ---
 
+## /ship
+
+작업을 **구현부터 병합까지** 한 번에 흘려보냅니다. 2~5단계는 위 커맨드들을 재구현하지 않고 그대로 호출합니다.
+
+```
+1. 구현        2. /commit      3. /create-pr(Draft)   4. /pr-review
+5. /apply-review   6. Ready 전환(CI)   7. 병합
+```
+
+### 사용법
+
+```
+/ship [작업 설명] [--loop=N] [--from=N] [--stop-at=N] [--base=<branch>] [--no-cleanup] [--post] [-y|--yes] [-h|--help]
+```
+
+인자 없이 호출하면 현재 브랜치 상태를 판정해 **다음에 해야 할 단계부터** 이어서 진행합니다.
+
+### 예시
+
+```
+/ship                        # 현재 상태 판정 → 다음 단계부터 끝까지
+/ship "W6 App 조립"          # 작업 설명을 주고 1단계부터
+/ship --from=4               # 리뷰 단계부터 재개 (실패 후 이어받기)
+/ship --stop-at=6            # Ready 전환까지만, 병합은 하지 않음
+/ship --loop=10              # 구현을 지속 반복 모드로 최대 10회
+/ship --post                 # 병합 후 진행 문서 갱신·실기기 체크리스트까지
+```
+
+### 옵션
+
+| 옵션 | 짧은 별칭 | 설명 |
+|------|------|------|
+| `--loop=N` | | 1단계(구현)를 지속 반복 모드로, 최대 N회. **미지정이 기본**(직접 구현) |
+| `--from=N` | | N단계부터 재개 |
+| `--stop-at=N` | | N단계까지만 수행 |
+| `--base=<branch>` | | base 브랜치 지정 (기본: 자동 추론) |
+| `--no-cleanup` | | 병합 후 브랜치 삭제 생략 |
+| `--post` | | 병합 후 진행 문서 갱신·실기기 체크리스트 출력 |
+| `--yes` | `-y` | 병합 직전 확인 생략 |
+| `--help` | `-h` | 도움말을 출력하고 종료 (아무것도 실행하지 않음) |
+
+### 단계와 정지 조건
+
+| # | 단계 | 게이트 | 실패 시 |
+|---|------|--------|---------|
+| 0 | 사전 점검 | 보호 브랜치 아님 | 중단 |
+| 1 | 구현 | 빌드·테스트·린트 통과 | **중단** |
+| 2 | `/commit` | 관심사·계층별 분리 | — |
+| 3 | `/create-pr` | **항상 Draft 로 생성** | 중단 |
+| 4 | `/pr-review` | — | — |
+| 5 | `/apply-review` | 반영 후 게이트 재통과 | **중단** |
+| 6 | Ready 전환 | CI green | **중단** + 실패 로그 |
+| 7 | 병합 | CI green 재확인 | 중단 |
+
+게이트 실패·CI red·리뷰 CRITICAL·merge conflict 중 하나라도 있으면 **그 단계에서 멈추고** 다음으로 넘어가지 않습니다. 중단 시 `--from=N` 재개 방법을 함께 알립니다.
+
+**병합(7단계)은 `--yes` 가 없으면 직전에 확인**합니다. 되돌리기 비용이 가장 큰 단계이기 때문입니다.
+
+### Draft 유지 순서
+
+`/ship` 이 PR 을 **항상 Draft 로 만드는** 이유입니다.
+
+CI 가 Draft PR 을 건너뛰는 설정이면, Ready 전환 후의 모든 push 가 CI 를 재실행시킵니다(`synchronize`).
+
+```
+잘못된 순서: 생성 → Ready → 리뷰 → 반영(push) → CI 2회
+/ship 의 순서: 생성(Draft) → 리뷰 → 반영 → Ready → CI 1회
+```
+
+3~5단계를 Draft 에서 끝내고 6단계에서 한 번만 Ready 로 올리므로 CI 가 1회로 끝납니다. CI 1회가 10분을 넘는 프로젝트에서 차이가 큽니다.
+
+### 진행 상태 판정
+
+상태 파일을 만들지 않습니다. 매 단계 시작 전 **git·GitHub 에 직접 물어** 어디까지 됐는지 판정합니다.
+
+| 판정 | 근거 |
+|------|------|
+| 구현·커밋 완료 | 워킹트리 clean **그리고** `<base>..HEAD` 에 커밋 존재 |
+| PR 생성됨 | `list_pull_requests(head: 현재 브랜치, state: open)` |
+| 리뷰 완료 | 그 PR 에 자체 리뷰 결과 코멘트 존재 |
+| Ready 상태 | PR 의 `draft` 필드 |
+| CI 결과 | `list_workflow_jobs(run_id)` 의 `conclusion` |
+
+상태 파일은 반드시 실제 진행과 어긋나므로 쓰지 않습니다. 사람이 중간에 손댄 것도 그대로 인식됩니다.
+
+### 게이트 자동 감지
+
+`.github/workflows/*.yml` 에서 **CI 가 실제로 실행하는 명령**을 추출해 로컬 게이트로 씁니다. CI 와 같은 것을 먼저 돌리므로 6단계 CI 실패를 앞당겨 잡습니다.
+
+감지 실패 시 `package.json` scripts·`Makefile`·`CLAUDE.md` 순으로 찾고, 그래도 없으면 사용자에게 묻습니다. 끝내 없으면 **게이트 없이 진행하되 그 사실을 명시**합니다.
+
+### 보고 규칙
+
+- 리뷰 단계에서 **작성자와 리뷰어가 동일**하다는 사실을 리뷰 결과와 PR 코멘트에 명시합니다. 변경 500줄 초과면 외부 리뷰어를 권고합니다.
+- 스크린샷·실기기 검증처럼 자동으로 확인할 수 없는 것은 **미수행이라고 적습니다**. 비워두고 넘어가지 않습니다.
+- 게이트 실패를 우회하려고 테스트를 지우거나 약화시키지 않습니다.
+
+---
+
 ## 의존성
 
 이 커맨드들의 필수/선택 의존성을 정리합니다.
@@ -457,7 +562,8 @@ PR에 달린 리뷰 코멘트를 분석하여 로컬 코드에 자동으로 반�
 | **GitHub MCP 서버** | `/pr-review`·`/apply-review` 필수 / `/create-pr` 선택 | PR 정보 수집·코멘트 게시에 사용. 프로젝트 `.mcp.json`에 설정. `/create-pr`은 미설정·실패 시 `gh` CLI로 폴백 |
 | **`GITHUB_PERSONAL_ACCESS_TOKEN`** | GitHub MCP 사용 시 필수 | GitHub API 인증용 환경변수 |
 | **`gh` CLI** | `/create-pr` 폴백 시 필요 | GitHub MCP 불가 시 `/create-pr`의 PR 생성 폴백 경로. `gh auth login` 인증 필요 |
-| **`~/.claude/commands/`** | 필수 | 글로벌 커맨드 정의 파일 (`create-pr.md`, `pr-review.md`, `apply-review.md`) |
+| **`~/.claude/commands/`** | 필수 | 글로벌 커맨드 정의 파일 (`commit.md`, `create-pr.md`, `pr-review.md`, `apply-review.md`, `ship.md`) |
+| **`/commit`·`/create-pr`·`/pr-review`·`/apply-review`** | `/ship` 필수 | `/ship`은 2~5단계에서 이 커맨드들을 재구현하지 않고 그대로 호출한다 |
 | **`~/.claude/templates/`** | 필수 | 출력 템플릿 및 플랫폼별 리뷰 기준 |
 | **oh-my-claudecode (OMC)** | 불필요 | `/pr-review`, `/apply-review`는 OMC와 독립적으로 동작. OMC 설치 여부와 무관하게 사용 가능 |
 | **code-review-graph** | 선택 | 설치+그래프 빌드 시 AST 기반 정밀 분석 자동 활용. 미설치 시 기존 Grep/Glob 방식으로 폴백 |
