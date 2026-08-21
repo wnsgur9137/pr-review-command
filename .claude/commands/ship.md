@@ -1,6 +1,6 @@
 ---
 description: 구현부터 병합까지 7단계 파이프라인을 순서대로 수행합니다 (구현 → commit → PR → 리뷰 → 반영 → Ready → 병합).
-argument-hint: "[작업 설명] [--loop=N] [--from=N] [--stop-at=N] [--base=<branch>] [--no-cleanup] [--post] [-y|--yes] [-h|--help]"
+argument-hint: "[작업 설명] [--loop=N] [--from=N] [--stop-at=N] [--base=<branch>] [--branch=<name>] [--no-cleanup] [--post] [-y|--yes] [-h|--help]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, Task, mcp__github__create_pull_request, mcp__github__get_pull_request, mcp__github__list_pull_requests, mcp__github__update_pull_request, mcp__github__merge_pull_request, mcp__github__add_issue_comment, mcp__github__list_workflow_runs, mcp__github__list_workflow_jobs, mcp__github__get_pull_request_files
 ---
 
@@ -23,6 +23,7 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, Task, mcp__
 - `--from=N`: N단계부터 재개. 실패 후 이어받을 때 쓴다
 - `--stop-at=N`: N단계까지만 수행 (예: `--stop-at=6` = 병합하지 않음)
 - `--base=<branch>`: base 브랜치 강제 지정. 미지정 시 자동 추론
+- `--branch=<name>`: 작업 브랜치 이름 지정. 미지정 시 기존 병합 이력에서 패턴을 뽑아 제안
 - `--no-cleanup`: 병합 후 브랜치 삭제 생략
 - `--post`: 병합 후 진행 문서 갱신·실기기 체크리스트 출력까지 수행
 - `-y`, `--yes`: 병합 직전 확인을 생략
@@ -52,6 +53,7 @@ Example: /ship "W6 App 조립"
   --from=N       N단계부터 재개
   --stop-at=N    N단계까지만
   --base=<br>    base 브랜치 지정 (기본: 자동 추론)
+  --branch=<n>   작업 브랜치 이름 지정 (기본: 기존 패턴에서 제안)
   --no-cleanup   병합 후 브랜치 삭제 생략
   --post         병합 후 진행 문서 갱신·실기기 체크리스트
   -y, --yes      병합 직전 확인 생략
@@ -89,6 +91,11 @@ CI 가 Draft 를 건너뛰는 설정이면, Ready 전환 후의 모든 push 가 
 `--from` 이 주어지면 그 단계부터, 없으면 위 판정 결과의 **다음 단계**부터 시작한다.
 이미 끝난 단계는 건너뛰고 그 사실을 한 줄로 알린다.
 
+**인자와 실물이 어긋나면 실물을 신뢰한다.** `--from=N` 으로 지정한 단계의 선행 조건이
+충족되지 않으면 **중단**하고 무엇이 빠졌는지 알린다.
+예: `--from=4` 인데 열린 PR 이 없다 → "3단계가 먼저 필요하다"고 알리고 멈춘다.
+없는 것을 있다고 가정하고 진행하지 마라.
+
 ### C. 게이트를 통과해야 다음으로 간다
 
 커밋 전·반영 후에 **CI 와 동일한 검증을 로컬에서** 돌린다. 실패하면 그 자리에서 멈춘다.
@@ -104,14 +111,36 @@ git status --porcelain
 git remote get-url origin
 ```
 
-- 현재 브랜치가 `main`/`master`/`develop` 등 보호 브랜치면 **중단**하고 알린다.
+- 현재 브랜치가 `main`/`master`/`develop` 등 보호 브랜치일 때는 **시작 단계에 따라 갈린다.**
+
+  | 시작 단계 | 의미 | 동작 |
+  |-----------|------|------|
+  | 1~2 (구현·커밋) | 정상 — 작업은 늘 여기서 시작한다 | **작업 브랜치를 만든다** |
+  | 3 이상 | 이상 — PR 브랜치가 체크아웃돼 있어야 한다 | **중단** |
+
+  브랜치 이름은 다음 순서로 정한다.
+  1. `--branch=<name>` 이 있으면 그대로 쓴다.
+  2. 없으면 `git log --merges` 의 기존 브랜치명에서 패턴을 뽑는다.
+     (병합된 브랜치는 삭제돼 `git branch -r` 에 없지만 병합 커밋 메시지에는 남아 있다)
+     변경 성격에 맞춰 접두사를 고른다 — docs-only 면 문서용, 코드 변경이면 기능용 접두사.
+  3. 제안한 이름을 보여주고 확인받는다(AskUserQuestion). `--yes` 면 제안값을 그대로 쓴다.
+
+  **보호 브랜치에 커밋하지 않는 것이 목적이지, 멈추는 것이 목적이 아니다.**
 - base 브랜치 결정: `--base` → `CLAUDE.md`/`AGENTS.md` 의 명시 → `origin/develop` → `origin/main` → `origin/master`.
 - 워킹트리가 dirty 한데 `--from` 이 2 이상이면, 이전 작업 잔여물일 수 있으므로 목록을 보여주고 진행 여부를 확인한다(AskUserQuestion).
 
 ### 검증 명령 자동 감지
 
 `.github/workflows/*.yml` 을 읽어 **CI 가 실제로 실행하는 스텝**을 추출해 게이트로 쓴다.
-`run:` 으로 시작하는 명령 중 빌드·테스트·린트에 해당하는 것을 순서대로 모은다.
+
+추출한 명령을 **두 종류로 나눈다.** 스텝의 `name:` 이 성격을 말해준다.
+
+| 종류 | 예 | 처리 |
+|------|-----|------|
+| **준비** | checkout · 툴체인 선택 · 의존성 설치 · 프로젝트 생성 · 캐시 | 로컬에 이미 갖춰져 있으면 건너뛴다 |
+| **검증** | lint · format · typecheck · build · test | **항상 실행하고, 실패하면 중단한다** |
+
+`|| true` 가 붙은 명령은 실패해도 통과하므로 **게이트가 아니다 — 제외한다.**
 
 감지에 실패하면 프로젝트 관례를 찾는다(`package.json` scripts, `Makefile`, `CLAUDE.md`).
 그래도 없으면 사용자에게 검증 명령을 묻고, 답이 없으면 **게이트 없이 진행하되 그 사실을 명시**한다.
@@ -123,6 +152,12 @@ git remote get-url origin
 변경 파일이 전부 `docs/**` · `**/*.md` 류이면 **docs-only** 로 표시한다.
 CI 워크플로에 `paths-ignore` 로 그 경로가 있으면 6단계에서 CI 를 기다리지 않는다.
 
+**docs-only 이면 빌드·테스트 게이트를 돌리지 않는다.** CI 조차 건너뛰는 변경에
+로컬 빌드를 돌릴 이유가 없다. 대신 **문서 게이트**를 쓴다 — 문서도 깨진다.
+
+- HTML: 태그 균형(`<table>`/`<tr>`/`<div>` 등), 목차 앵커가 실제 헤딩과 매칭되는지
+- Markdown: 목차 앵커 정합, 상대 링크의 대상 파일이 실제로 존재하는지
+
 ---
 
 ## 1단계: 구현
@@ -133,7 +168,7 @@ CI 워크플로에 `paths-ignore` 로 그 경로가 있으면 6단계에서 CI �
 - 이 레포에 주차별 기획 문서 관례가 있으면 **해당 문서를 먼저 읽고** 그 결정을 따른다.
   기획 문서가 있어야 할 자리에 없으면 경고한다(구현 전 기획 원칙).
 
-**게이트**: 0단계에서 감지한 검증 명령을 전부 실행한다.
+**게이트**: 0단계에서 정한 게이트를 실행한다 — 코드 변경이면 검증 명령, docs-only 면 문서 게이트.
 
 - 하나라도 실패하면 **중단**. "게이트 실패 = 미완성"이다. 테스트를 지우거나 약화시켜 통과시키지 마라.
 - 테스트를 새로 추가했다면 **실행 로그에 그 이름이 찍히는지 확인**한다.
